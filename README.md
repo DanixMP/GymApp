@@ -12,6 +12,11 @@ A comprehensive Windows desktop application for managing gym members, tracking m
 - **Modern UI**: Clean and intuitive interface built with PyQt5
 
 ## Screenshots
+<img width="1919" height="1079" alt="image" src="https://github.com/user-attachments/assets/c04a0df3-21f5-419b-9f22-6b1c48176614" />
+<img width="1919" height="1079" alt="image" src="https://github.com/user-attachments/assets/c2a31189-72b0-4213-9f22-2d2731fea4e2" />
+<img width="1919" height="1079" alt="image" src="https://github.com/user-attachments/assets/23d98a2c-a37e-48c5-8fdc-275f79e5f27c" />
+<img width="1919" height="1079" alt="image" src="https://github.com/user-attachments/assets/ea052a73-b198-46ee-90e0-bd7d5b581f6d" />
+<img width="1919" height="1079" alt="image" src="https://github.com/user-attachments/assets/65824a03-9997-4e91-9b75-86555de013cb" />
 
 
 ## Technology Stack
