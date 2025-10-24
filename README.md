@@ -13,7 +13,6 @@ A comprehensive Windows desktop application for managing gym members, tracking m
 
 ## Screenshots
 
-*(Add screenshots of your application here)*
 
 ## Technology Stack
 
@@ -44,7 +43,7 @@ pip install -r requirements.txt
 
 3. Run the application:
 ```bash
-python Dir/App.py
+python App.py
 ```
 
 ## Requirements
