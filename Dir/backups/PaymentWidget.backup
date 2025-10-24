@@ -1,0 +1,1207 @@
+
+from PyQt5 import QtWidgets, QtCore, QtPrintSupport, QtGui
+from PyQt5.QtCore import Qt, QDate
+import os
+import sqlite3
+from datetime import datetime, timedelta
+# Jalali date support
+import jdatetime
+
+# --- Jalali Calendar Popup Widget ---
+class JalaliCalendarPopup(QtWidgets.QDialog):
+    def __init__(self, parent=None, selected_date=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.Popup)
+        self.setLayoutDirection(Qt.RightToLeft)
+        self.setStyleSheet("font-family: 'B Yekan'; font-size: 14pt;")
+        self.setMinimumWidth(320)
+        self.selected_date = selected_date or jdatetime.datetime.now()
+        self.current_month = self.selected_date.month
+        self.current_year = self.selected_date.year
+        self.init_ui()
+
+    def init_ui(self):
+        vbox = QtWidgets.QVBoxLayout(self)
+        nav_layout = QtWidgets.QHBoxLayout()
+        self.prev_btn = QtWidgets.QPushButton('◀')
+        self.prev_btn.setFixedWidth(40)
+        self.prev_btn.clicked.connect(self.prev_month)
+        self.next_btn = QtWidgets.QPushButton('▶')
+        self.next_btn.setFixedWidth(40)
+        self.next_btn.clicked.connect(self.next_month)
+        self.month_label = QtWidgets.QLabel()
+        self.month_label.setAlignment(QtCore.Qt.AlignCenter)
+        nav_layout.addWidget(self.prev_btn)
+        nav_layout.addWidget(self.month_label, 1)
+        nav_layout.addWidget(self.next_btn)
+        vbox.addLayout(nav_layout)
+
+        self.grid = QtWidgets.QGridLayout()
+        vbox.addLayout(self.grid)
+
+        today_btn = QtWidgets.QPushButton('امروز')
+        today_btn.clicked.connect(self.select_today)
+        vbox.addWidget(today_btn)
+
+        self.update_calendar()
+
+    def update_calendar(self):
+        # Clear grid
+        for i in reversed(range(self.grid.count())):
+            widget = self.grid.itemAt(i).widget()
+            if widget:
+                widget.setParent(None)
+        # Set month label
+        month_names = [
+            'فروردین', 'اردیبهشت', 'خرداد', 'تیر', 'مرداد', 'شهریور',
+            'مهر', 'آبان', 'آذر', 'دی', 'بهمن', 'اسفند'
+        ]
+        self.month_label.setText(f"{month_names[self.current_month-1]} {self.current_year}")
+        # Weekdays
+        weekdays = ['ش', 'ی', 'د', 'س', 'چ', 'پ', 'ج']
+        for col, wd in enumerate(weekdays):
+            lbl = QtWidgets.QLabel(wd)
+            lbl.setAlignment(QtCore.Qt.AlignCenter)
+            self.grid.addWidget(lbl, 0, col)
+        # First day of month
+        first = jdatetime.datetime(self.current_year, self.current_month, 1)
+        start_col = (first.togregorian().weekday() + 1) % 7
+        days_in_month = jdatetime.j_days_in_month[self.current_month-1]
+        row, col = 1, start_col
+        for day in range(1, days_in_month+1):
+            btn = QtWidgets.QPushButton(str(day))
+            btn.setFixedSize(36, 36)
+            btn.clicked.connect(lambda _, d=day: self.select_day(d))
+            if (day == self.selected_date.day and
+                self.current_month == self.selected_date.month and
+                self.current_year == self.selected_date.year):
+                btn.setStyleSheet('background:#009966;color:white;border-radius:18px;')
+            self.grid.addWidget(btn, row, col)
+            col += 1
+            if col > 6:
+                col = 0
+                row += 1
+
+    def prev_month(self):
+        if self.current_month == 1:
+            self.current_month = 12
+            self.current_year -= 1
+        else:
+            self.current_month -= 1
+        self.update_calendar()
+
+    def next_month(self):
+        if self.current_month == 12:
+            self.current_month = 1
+            self.current_year += 1
+        else:
+            self.current_month += 1
+        self.update_calendar()
+
+    def select_day(self, day):
+        self.selected_date = jdatetime.datetime(self.current_year, self.current_month, day)
+        self.accept()
+
+    def select_today(self):
+        today = jdatetime.datetime.now()
+        self.selected_date = today
+        self.current_month = today.month
+        self.current_year = today.year
+        self.update_calendar()
+        self.accept()
+
+    @staticmethod
+    def get_jalali(parent=None, initial=None):
+        dlg = JalaliCalendarPopup(parent, selected_date=initial)
+        if dlg.exec_() == QtWidgets.QDialog.Accepted:
+            return dlg.selected_date
+        return None
+# Always use absolute path for gym.db in this directory
+DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), 'gym.db'))
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+from reportlab.lib.units import inch
+
+
+class PaymentWidget(QtWidgets.QWidget):
+    # set_jalali_dateedit is now obsolete; use JalaliDateEdit instead
+    def __init__(self, parent=None, current_user_id=None, total_members=0):
+        super().__init__(parent)
+        self.current_user_id = current_user_id
+        self.total_members = total_members
+        self.monthly_fee = self.get_monthly_fee()
+        self.init_ui()
+        self.load_transactions()
+
+    def set_member_count(self, total_members):
+        self.total_members = total_members
+        # If you display total_members in the UI, update it here as well
+        # For example, if you have a label: self.member_count_label.setText(str(total_members))
+
+
+    def get_monthly_fee(self):
+        """Retrieve the current monthly fee from settings."""
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT value FROM settings WHERE key = 'monthly_fee'")
+            result = cursor.fetchone()
+            return int(result[0]) if result and result[0].isdigit() else 500000  # Default 500,000 Tomans
+
+    def init_ui(self):
+        # Main layout
+        main_layout = QtWidgets.QVBoxLayout(self)
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(15)
+
+        # Title and Controls
+        title_layout = QtWidgets.QHBoxLayout()
+        
+        self.title = QtWidgets.QLabel('مدیریت مالی باشگاه')
+        self.title.setStyleSheet('font-size: 24px; font-weight: bold; color: #2c3e50;')
+        title_layout.addWidget(self.title)
+        
+        # Export to PDF button
+        self.export_btn = QtWidgets.QPushButton('خروجی PDF')
+        self.export_btn.setIcon(self.style().standardIcon(QtWidgets.QStyle.SP_FileIcon))
+        self.export_btn.clicked.connect(self.export_to_pdf)
+        title_layout.addWidget(self.export_btn)
+        
+        main_layout.addLayout(title_layout)
+
+        # Stats Cards
+        stats_layout = QtWidgets.QHBoxLayout()
+        # Monthly Fee Card
+        self.fee_card = self.create_stat_card('شهریه ماهیانه', f'{self.monthly_fee:,} تومان', '#3498db')
+        stats_layout.addWidget(self.fee_card)
+        # Total Income Card
+        self.income_card = self.create_stat_card('درآمد کل', 'در حال محاسبه...', '#2ecc71')
+        stats_layout.addWidget(self.income_card)
+        # Total Expenses Card
+        self.expense_card = self.create_stat_card('هزینه کل', 'در حال محاسبه...', '#e74c3c')
+        stats_layout.addWidget(self.expense_card)
+        # Net Income Card
+        self.net_income_card = self.create_stat_card('سود خالص', 'در حال محاسبه...', '#9b59b6')
+        stats_layout.addWidget(self.net_income_card)
+        main_layout.addLayout(stats_layout)
+
+        # --- Monthly Fee Edit Section ---
+        fee_edit_group = QtWidgets.QGroupBox('تغییر شهریه ماهیانه')
+        fee_edit_group.setStyleSheet("""
+            QGroupBox { font-size: 15pt; color: #009966; font-family: 'Dubai Medium'; border: 2px solid #009966; border-radius: 12px; margin-top: 12px; background: #fff; }
+            QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; padding: 0 12px 0 0; color: #fff; background: #009966; border-radius: 8px; font-size: 16pt; margin-bottom: 12px; text-align: left; }
+        """)
+        fee_edit_layout = QtWidgets.QHBoxLayout()
+        fee_edit_layout.setAlignment(QtCore.Qt.AlignRight)
+        fee_edit_layout.setDirection(QtWidgets.QBoxLayout.RightToLeft)
+        fee_label = QtWidgets.QLabel('مبلغ جدید:')
+        fee_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        fee_label.setStyleSheet("font-size: 14pt; color: #009966; min-width: 80px;")
+        self.fee_edit = QtWidgets.QLineEdit(str(self.monthly_fee))
+        self.fee_edit.setValidator(QtGui.QIntValidator(0, 1000000000, self))
+        self.fee_edit.setStyleSheet("font-size: 16pt; color: #009966; background: #f3f3f3; border-radius: 8px; padding: 8px 16px; font-family: 'Dubai Medium'; min-width: 120px;")
+        self.save_fee_btn = QtWidgets.QPushButton('ذخیره شهریه')
+        self.save_fee_btn.setStyleSheet("font-size: 15pt; background: #009966; color: #fff; border-radius: 8px; padding: 8px 24px;")
+        self.save_fee_btn.clicked.connect(self.save_monthly_fee)
+        fee_edit_layout.addWidget(fee_label)
+        fee_edit_layout.addWidget(self.fee_edit)
+        fee_edit_layout.addWidget(self.save_fee_btn)
+        fee_edit_group.setLayout(fee_edit_layout)
+        main_layout.addWidget(fee_edit_group)
+
+        # Transaction Types Tab
+        self.tabs = QtWidgets.QTabWidget()
+        self.tabs.setStyleSheet("""
+            QTabWidget::pane { 
+                border: 2px solid #3c096c;
+                border-radius: 8px;
+                background: white;
+            }
+            QTabBar::tab {
+                background: #f0f0f0;
+                color: #3c096c;
+                padding: 12px 24px;
+                font-size: 11pt;
+                font-family: 'Dubai Medium';
+                margin-right: 4px;
+                border-top-left-radius: 8px;
+                border-top-right-radius: 8px;
+                text-align: right;
+                min-width: 250px;
+                max-width: 250px;
+            }
+            QTabBar::tab:selected {
+                background: #3c096c;
+                color: white;
+            }
+        """)
+
+        # Quick Pay Tab (new)
+        self.quickpay_tab = QtWidgets.QWidget()
+        self.setup_quickpay_tab()
+        self.tabs.addTab(self.quickpay_tab, 'پرداخت سریع')
+
+        # Membership Payments Tab
+        self.membership_tab = QtWidgets.QWidget()
+        self.setup_membership_tab()
+        self.tabs.addTab(self.membership_tab, 'پرداخت‌های عضویت')
+
+        # Income/Expense Tab
+        self.transaction_tab = QtWidgets.QWidget()
+        self.setup_transaction_tab()
+        self.tabs.addTab(self.transaction_tab, 'درآمد و هزینه')
+
+        # Transaction History Tab
+        self.history_tab = QtWidgets.QWidget()
+        self.setup_history_tab()
+        self.tabs.addTab(self.history_tab, 'تاریخچه تراکنش‌ها')
+
+        main_layout.addWidget(self.tabs)
+        self.update_stats()
+    def setup_quickpay_tab(self):
+        layout = QtWidgets.QVBoxLayout(self.quickpay_tab)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(16)
+
+        group = QtWidgets.QGroupBox('پرداخت سریع عضویت')
+        group.setStyleSheet("""
+            QGroupBox {
+                font-size: 18pt;
+                color: #3c096c;
+                font-family: 'Dubai Medium';
+                border: 2px solid #3c096c;
+                border-radius: 12px;
+                margin-top: 12px;
+                background: #fff;
+                text-align: right;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                padding: 0 12px 0 0;
+                color: #fff;
+                background: #3c096c;
+                border-radius: 8px;
+                font-size: 16pt;
+                margin-bottom: 12px;
+                text-align: left;
+            }
+        """)
+        hbox = QtWidgets.QHBoxLayout(group)
+        hbox.setAlignment(QtCore.Qt.AlignRight)
+        hbox.setDirection(QtWidgets.QBoxLayout.RightToLeft)
+
+        member_label = QtWidgets.QLabel('عضو:')
+        member_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        member_label.setStyleSheet("font-size: 14pt; color: #3c096c; min-width: 80px;")
+
+        self.quickpay_member_combo = QtWidgets.QComboBox()  
+        self.quickpay_member_combo.setMinimumWidth(220)
+        self.quickpay_member_combo.setStyleSheet("font-size: 14pt; color: #009966; background: #f3f3f3; border-radius: 8px; padding: 8px 16px;")
+
+        pay_btn = QtWidgets.QPushButton('ثبت پرداخت')
+        pay_btn.setStyleSheet('font-size: 14pt; background: #27ae60; color: #fff; border-radius: 8px; padding: 8px 24px;')
+        pay_btn.clicked.connect(self.quickpay_process_payment)
+
+        hbox.addWidget(member_label)
+        hbox.addWidget(self.quickpay_member_combo)
+        hbox.addWidget(pay_btn)
+
+        layout.addWidget(group)
+        layout.addStretch()
+
+    def load_members_quickpay(self):
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                SELECT id, name, family, phone 
+                FROM members 
+                WHERE status = 'active' 
+                ORDER BY name, family
+                """)
+            members = cursor.fetchall()
+            self.quickpay_member_combo.clear()
+            for member_id, name, family, phone in members:
+                display_name = f"{name} {family} - {phone}"
+                self.quickpay_member_combo.addItem(display_name, member_id)
+        except Exception as e:
+            print(f"Error loading members (quickpay): {e}")
+
+    def quickpay_process_payment(self):
+        member_id = self.quickpay_member_combo.currentData()
+        if not member_id:
+            QtWidgets.QMessageBox.warning(self, 'خطا', 'لطفا یک عضو انتخاب کنید.')
+            return
+        try:
+            amount = self.monthly_fee
+            payment_date = QtCore.QDate.currentDate().toString('yyyy-MM-dd')
+            notes = 'پرداخت سریع عضویت'
+            with sqlite3.connect(DB_PATH) as conn:
+                cursor = conn.cursor()
+                cursor.execute("BEGIN TRANSACTION")
+                cursor.execute("""
+                    INSERT INTO transactions 
+                    (transaction_type, amount, description, payment_date, created_by)
+                    VALUES (?, ?, ?, ?, ?)
+                """, ('membership', amount, notes, payment_date, self.current_user_id))
+                transaction_id = cursor.lastrowid
+                due_date = (QtCore.QDate.currentDate().addMonths(1)).toString('yyyy-MM-dd')
+                cursor.execute("""
+                    INSERT INTO member_payments 
+                    (member_id, transaction_id, payment_date, due_date, status)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (member_id, transaction_id, payment_date, due_date, 'paid'))
+                cursor.execute("""
+                    UPDATE members 
+                    SET membership_end = date(?, '+1 month')
+                    WHERE id = ?
+                """, (payment_date, member_id))
+                conn.commit()
+            # Show Jalali date in message
+            jalali_date = jdatetime.datetime.now().strftime('%Y/%m/%d')
+            QtWidgets.QMessageBox.information(
+                self, 
+                'پرداخت با موفقیت ثبت شد',
+                f'پرداخت عضویت با مبلغ {amount:,} تومان در تاریخ {jalali_date} با موفقیت ثبت شد.'
+            )
+            self.update_stats()
+            self.load_transactions()
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self, 
+                'خطا', 
+                f'خطا در ثبت پرداخت: {str(e)}'
+            )
+            print(f"Error processing quickpay payment: {e}")
+
+    def save_monthly_fee(self):
+        fee_text = self.fee_edit.text().strip()
+        if not fee_text or not fee_text.isdigit() or int(fee_text) <= 0:
+            QtWidgets.QMessageBox.warning(self, 'خطا', 'لطفا مبلغ معتبر وارد کنید.')
+            return
+        new_fee = int(fee_text)
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                cursor = conn.cursor()
+                cursor.execute("UPDATE settings SET value = ? WHERE key = 'monthly_fee'", (str(new_fee),))
+                conn.commit()
+            self.monthly_fee = new_fee
+            self.fee_card.layout().itemAt(1).widget().setText(f"{self.monthly_fee:,} تومان")
+            QtWidgets.QMessageBox.information(self, 'ذخیره شد', 'شهریه ماهیانه با موفقیت ذخیره شد.')
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, 'خطا', f'خطا در ذخیره شهریه: {str(e)}')
+
+    def load_members_quick(self):
+        """Load active members into the quick pay combo box."""
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                SELECT id, name, family, phone 
+                FROM members 
+                WHERE status = 'active' 
+                ORDER BY name, family
+                """)
+            members = cursor.fetchall()
+            self.quick_member_combo.clear()
+            for member_id, name, family, phone in members:
+                display_name = f"{name} {family} - {phone}"
+                self.quick_member_combo.addItem(display_name, member_id)
+        except Exception as e:
+            print(f"Error loading members (quick): {e}")
+
+    def quick_process_membership_payment(self):
+        member_id = self.quick_member_combo.currentData()
+        if not member_id:
+            QtWidgets.QMessageBox.warning(self, 'خطا', 'لطفا یک عضو انتخاب کنید.')
+            return
+        try:
+            amount = self.monthly_fee
+            payment_date = QtCore.QDate.currentDate().toString('yyyy-MM-dd')
+            notes = 'پرداخت سریع عضویت'
+            with sqlite3.connect(DB_PATH) as conn:
+                cursor = conn.cursor()
+                cursor.execute("BEGIN TRANSACTION")
+                cursor.execute("""
+                    INSERT INTO transactions 
+                    (transaction_type, amount, description, payment_date, created_by)
+                    VALUES (?, ?, ?, ?, ?)
+                """, ('membership', amount, notes, payment_date, self.current_user_id))
+                transaction_id = cursor.lastrowid
+                due_date = (QtCore.QDate.currentDate().addMonths(1)).toString('yyyy-MM-dd')
+                cursor.execute("""
+                    INSERT INTO member_payments 
+                    (member_id, transaction_id, payment_date, due_date, status)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (member_id, transaction_id, payment_date, due_date, 'paid'))
+                cursor.execute("""
+                    UPDATE members 
+                    SET membership_end = date(?, '+1 month')
+                    WHERE id = ?
+                """, (payment_date, member_id))
+                conn.commit()
+            QtWidgets.QMessageBox.information(
+                self, 
+                'پرداخت با موفقیت ثبت شد',
+                f'پرداخت عضویت با مبلغ {amount:,} تومان با موفقیت ثبت شد.'
+            )
+            self.update_stats()
+            self.load_transactions()
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self, 
+                'خطا', 
+                f'خطا در ثبت پرداخت: {str(e)}'
+            )
+            print(f"Error processing quick payment: {e}")
+
+    def create_stat_card(self, title, value, color):
+        """Create a stat card with title and value."""
+        card = QtWidgets.QFrame()
+        card.setStyleSheet(f'''
+            QFrame {{
+                background-color: {color};
+                border-radius: 8px;
+                padding: 15px;
+                color: white;
+            }}
+            QLabel {{ color: white; }}
+        ''')
+        
+        layout = QtWidgets.QVBoxLayout(card)
+        
+        title_label = QtWidgets.QLabel(title)
+        title_label.setStyleSheet('font-size: 14px; font-weight: bold;')
+        
+        value_label = QtWidgets.QLabel(value)
+        value_label.setStyleSheet('font-size: 18px;')
+        
+        layout.addWidget(title_label)
+        layout.addWidget(value_label)
+        layout.addStretch()
+        
+        return card
+
+    def setup_membership_tab(self, parent=None):
+        """Setup the membership payment tab."""
+        if parent is None:
+            parent = self.membership_tab
+        layout = QtWidgets.QVBoxLayout(parent)
+
+        # Member Selection (label right, combo left)
+        member_layout = QtWidgets.QHBoxLayout()
+        member_layout.setAlignment(QtCore.Qt.AlignRight)
+        self.member_combo = QtWidgets.QComboBox()
+        self.member_combo.setMinimumWidth(200)
+        self.load_members()
+        member_label = QtWidgets.QLabel('عضو:')
+        member_label.setStyleSheet("font-size: 14pt; font-family: 'Dubai Medium'; color: #3c096c; min-width: 120px; text-align: right;")
+        member_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        member_layout.addWidget(member_label)
+        member_layout.addWidget(self.member_combo)
+        member_layout.addStretch()
+
+        # Payment Details (labels right, fields left)
+        form_layout = QtWidgets.QGridLayout()
+        form_layout.setHorizontalSpacing(18)
+        form_layout.setVerticalSpacing(16)
+        label_style = "font-size: 14pt; font-family: 'Dubai Medium'; color: #3c096c; min-width: 120px; text-align: right;"
+        entry_style = "font-size: 14pt; font-family: 'Dubai Medium'; text-align:right; padding: 8px 16px; border-radius: 8px;"
+
+        # Monthly Fee
+        self.fee_label = QtWidgets.QLabel(f'مبلغ شهریه: {self.monthly_fee:,} تومان')
+        self.fee_label.setStyleSheet(entry_style)
+        fee_lbl = QtWidgets.QLabel('مبلغ پایه:')
+        fee_lbl.setStyleSheet(label_style)
+        fee_lbl.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+
+        # Discount
+        self.discount_input = QtWidgets.QLineEdit('0')
+        self.discount_input.setPlaceholderText('مقدار تخفیف (تومان)')
+        self.discount_input.setStyleSheet(entry_style)
+        self.discount_input.textChanged.connect(self.update_payment_summary)
+        discount_lbl = QtWidgets.QLabel('تخفیف:')
+        discount_lbl.setStyleSheet(label_style)
+        discount_lbl.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+
+        # Final Amount
+        self.final_amount_label = QtWidgets.QLabel(f'مبلغ نهایی: {self.monthly_fee:,} تومان')
+        self.final_amount_label.setStyleSheet(entry_style)
+        final_lbl = QtWidgets.QLabel('مبلغ قابل پرداخت:')
+        final_lbl.setStyleSheet(label_style)
+        final_lbl.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+
+
+        # Notes
+        self.notes_input = QtWidgets.QTextEdit()
+        self.notes_input.setPlaceholderText('توضیحات (اختیاری)')
+        self.notes_input.setMaximumHeight(100)
+        self.notes_input.setStyleSheet(entry_style)
+        notes_lbl = QtWidgets.QLabel('توضیحات:')
+        notes_lbl.setStyleSheet(label_style)
+        notes_lbl.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+
+        # Add to grid: row, col
+        form_layout.addWidget(fee_lbl, 0, 2)
+        form_layout.addWidget(self.fee_label, 0, 1)
+        form_layout.addWidget(discount_lbl, 1, 2)
+        form_layout.addWidget(self.discount_input, 1, 1)
+        form_layout.addWidget(final_lbl, 2, 2)
+        form_layout.addWidget(self.final_amount_label, 2, 1)
+        form_layout.addWidget(notes_lbl, 4, 2)
+        form_layout.addWidget(self.notes_input, 4, 1)
+
+        # Submit Button
+        self.submit_btn = QtWidgets.QPushButton('ثبت پرداخت')
+        self.submit_btn.setStyleSheet('''
+            QPushButton {
+                background-color: #27ae60;
+                color: white;
+                border: none;
+                padding: 10px 20px;
+                border-radius: 5px;
+                font-size: 14pt;
+                font-family: 'Dubai Medium';
+            }
+            QPushButton:hover {
+                background-color: #219653;
+            }
+        ''')
+        self.submit_btn.clicked.connect(self.process_membership_payment)
+
+        layout.addLayout(member_layout)
+        layout.addLayout(form_layout)
+        layout.addWidget(self.submit_btn, 0, Qt.AlignCenter)
+        layout.addStretch()
+    
+    def load_members(self):
+        """Load active members into the combo box."""
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                SELECT id, name, family, phone 
+                FROM members 
+                WHERE status = 'active' 
+                ORDER BY name, family
+            """)
+            members = cursor.fetchall()
+            
+            self.member_combo.clear()
+            for member_id, name, family, phone in members:
+                display_name = f"{name} {family} - {phone}"
+                self.member_combo.addItem(display_name, member_id)
+        except Exception as e:
+            print(f"Error loading members: {e}")
+    
+    def update_payment_summary(self):
+        """Update the payment summary when discount changes."""
+        try:
+            discount = int(self.discount_input.text() or 0)
+            final_amount = max(0, self.monthly_fee - discount)
+            self.final_amount_label.setText(f'مبلغ نهایی: {final_amount:,} تومان')
+        except ValueError:
+            self.final_amount_label.setText(f'مبلغ نهایی: {self.monthly_fee:,} تومان')
+    
+    def process_membership_payment(self):
+        """Process a membership payment."""
+        member_id = self.member_combo.currentData()
+        if not member_id:
+            QtWidgets.QMessageBox.warning(self, 'خطا', 'لطفا یک عضو انتخاب کنید.')
+            return
+        try:
+            discount = int(self.discount_input.text() or 0)
+            amount = max(0, self.monthly_fee - discount)
+            # Set payment_date to today (system-generated)
+            gdate = datetime.today()
+            payment_date = gdate.strftime('%Y-%m-%d')
+            notes = self.notes_input.toPlainText().strip()
+            with sqlite3.connect(DB_PATH) as conn:
+                cursor = conn.cursor()
+                # Start transaction
+                cursor.execute("BEGIN TRANSACTION")
+                # Insert transaction
+                cursor.execute("""
+                    INSERT INTO transactions 
+                    (transaction_type, amount, description, payment_date, created_by)
+                    VALUES (?, ?, ?, ?, ?)
+                """, ('membership', amount, notes, payment_date, self.current_user_id))
+                transaction_id = cursor.lastrowid
+                # Calculate due date (1 month from payment date)
+                due_date = (gdate + timedelta(days=30)).strftime('%Y-%m-%d')
+                # Insert member payment record
+                cursor.execute("""
+                    INSERT INTO member_payments 
+                    (member_id, transaction_id, payment_date, due_date, status)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (member_id, transaction_id, payment_date, due_date, 'paid'))
+                # Update member's membership end date
+                cursor.execute("""
+                    UPDATE members 
+                    SET membership_end = date(?, '+1 month')
+                    WHERE id = ?
+                """, (payment_date, member_id))
+                # Commit transaction
+                conn.commit()
+                # Show success message with Jalali date
+                jalali_str = jdatetime.date.fromgregorian(date=gdate).strftime('%Y/%m/%d')
+                QtWidgets.QMessageBox.information(
+                    self, 
+                    'پرداخت با موفقیت ثبت شد',
+                    f'پرداخت عضویت با مبلغ {amount:,} تومان در تاریخ {jalali_str} با موفقیت ثبت شد.'
+                )
+                # Reset form
+                self.discount_input.setText('0')
+                self.notes_input.clear()
+                self.update_stats()
+                self.load_transactions()
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self, 
+                'خطا', 
+                f'خطا در ثبت پرداخت: {str(e)}'
+            )
+            print(f"Error processing payment: {e}")
+            
+    def setup_transaction_tab(self, parent=None):
+        """Setup the income/expense tab."""
+        if parent is None:
+            parent = self.transaction_tab
+        layout = QtWidgets.QVBoxLayout(parent)
+        
+        # Transaction Type
+        type_layout = QtWidgets.QHBoxLayout()
+        type_layout.addWidget(QtWidgets.QLabel('نوع تراکنش:'))
+        
+        self.trans_type_combo = QtWidgets.QComboBox()
+        self.trans_type_combo.addItems(['درآمد', 'هزینه'])
+        self.trans_type_combo.currentTextChanged.connect(self.update_transaction_ui)
+        type_layout.addWidget(self.trans_type_combo)
+        
+        # Category
+        self.category_combo = QtWidgets.QComboBox()
+        self.update_categories()
+        
+        # Amount
+        self.amount_input = QtWidgets.QLineEdit()
+        self.amount_input.setPlaceholderText('مبلغ به تومان')
+        self.amount_input.setValidator(QtGui.QIntValidator(0, 1000000000, self))
+        
+        
+        # Description
+        self.description_input = QtWidgets.QTextEdit()
+        self.description_input.setPlaceholderText('شرح تراکنش (اختیاری)')
+        self.description_input.setMaximumHeight(100)
+        
+        # Form Layout (modern RTL, label right, field left)
+        form_layout = QtWidgets.QVBoxLayout()
+        label_style = "font-size: 14pt; font-family: 'Dubai Medium'; color: #3c096c; min-width: 100px; text-align: right;"
+        entry_style = "font-size: 14pt; font-family: 'Dubai Medium'; text-align:right; padding: 8px 16px; border-radius: 8px;"
+        self.category_combo.setStyleSheet(entry_style)
+        self.amount_input.setStyleSheet(entry_style)
+        self.description_input.setStyleSheet(entry_style)
+
+        # دسته‌بندی
+        cat_layout = QtWidgets.QHBoxLayout()
+        cat_layout.setAlignment(QtCore.Qt.AlignRight)
+        cat_layout.setDirection(QtWidgets.QBoxLayout.RightToLeft)
+        cat_label = QtWidgets.QLabel('دسته‌بندی:')
+        cat_label.setStyleSheet(label_style)
+        cat_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        cat_layout.addWidget(cat_label)
+        cat_layout.addWidget(self.category_combo)
+        form_layout.addLayout(cat_layout)
+
+        # مبلغ
+        amt_layout = QtWidgets.QHBoxLayout()
+        amt_layout.setAlignment(QtCore.Qt.AlignRight)
+        amt_layout.setDirection(QtWidgets.QBoxLayout.RightToLeft)
+        amt_label = QtWidgets.QLabel('مبلغ:')
+        amt_label.setStyleSheet(label_style)
+        amt_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        amt_layout.addWidget(amt_label)
+        amt_layout.addWidget(self.amount_input)
+        form_layout.addLayout(amt_layout)
+
+
+        # شرح
+        desc_layout = QtWidgets.QHBoxLayout()
+        desc_layout.setAlignment(QtCore.Qt.AlignRight)
+        desc_layout.setDirection(QtWidgets.QBoxLayout.RightToLeft)
+        desc_label = QtWidgets.QLabel('شرح:')
+        desc_label.setStyleSheet(label_style)
+        desc_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        desc_layout.addWidget(desc_label)
+        desc_layout.addWidget(self.description_input)
+        form_layout.addLayout(desc_layout)
+        
+        # Buttons
+        button_layout = QtWidgets.QHBoxLayout()
+        
+        self.clear_btn = QtWidgets.QPushButton('پاک کردن فرم')
+        self.clear_btn.setStyleSheet('''
+            QPushButton {
+                background-color: #95a5a6;
+                color: white;
+                font-size: 18pt;
+                font-family: 'Dubai Medium';
+                border: none;
+                padding: 10px 20px;
+                border-radius: 5px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #7f8c8d;
+            }
+        ''')
+        self.clear_btn.clicked.connect(self.clear_transaction_form)
+        
+        self.save_btn = QtWidgets.QPushButton('ذخیره تراکنش')
+        self.save_btn.setStyleSheet('''
+            QPushButton {
+                background-color: #2980b9;
+                color: white;
+                border: none;
+                padding: 10px 20px;
+                border-radius: 5px;
+                font-size: 16px;
+            }
+            QPushButton:hover {
+                background-color: #3498db;
+            }
+        ''')
+        self.save_btn.clicked.connect(self.save_transaction)
+        
+        button_layout.addWidget(self.clear_btn)
+        button_layout.addWidget(self.save_btn)
+        
+        # Add all to main layout
+        layout.addLayout(type_layout)
+        layout.addLayout(form_layout)
+        layout.addLayout(button_layout)
+        layout.addStretch()
+        
+        # Set initial UI state
+        self.update_transaction_ui()
+    
+    def update_categories(self):
+        """Update the categories based on transaction type."""
+        current_type = self.trans_type_combo.currentText()
+        self.category_combo.clear()
+        
+        if current_type == 'درآمد':
+            categories = [
+                'حق عضویت', 'فروش محصولات', 'خدمات اضافی', 'سایر درآمدها'
+            ]
+        else:
+            categories = [
+                'اجاره', 'حقوق پرسنل', 'قبوض', 'خرید تجهیزات', 
+                'تعمیرات', 'بیمه', 'بازاریابی', 'سایر هزینه‌ها'
+            ]
+            
+        self.category_combo.addItems(categories)
+    
+    def update_transaction_ui(self):
+        """Update UI elements when transaction type changes."""
+        # Update categories
+        self.update_categories()
+        
+        # Update button color based on type
+        if self.trans_type_combo.currentText() == 'درآمد':
+            self.save_btn.setStyleSheet('''
+                QPushButton {
+                    background-color: #27ae60;
+                    color: white;
+                    border: none;
+                    padding: 10px 20px;
+                    border-radius: 5px;
+                    font-size: 16px;
+                }
+                QPushButton:hover {
+                    background-color: #2ecc71;
+                }
+            ''')
+        else:
+            self.save_btn.setStyleSheet('''
+                QPushButton {
+                    background-color: #e74c3c;
+                    color: white;
+                    border: none;
+                    padding: 10px 20px;
+                    border-radius: 5px;
+                    font-size: 16px;
+                }
+                QPushButton:hover {
+                    background-color: #c0392b;
+                }
+            ''')
+    
+    def clear_transaction_form(self):
+        """Clear the transaction form."""
+        self.amount_input.clear()
+        self.description_input.clear()
+    
+    def save_transaction(self):
+        """Save a new income/expense transaction."""
+        # Validate inputs
+        amount_text = self.amount_input.text().strip()
+        if not amount_text:
+            QtWidgets.QMessageBox.warning(self, 'خطا', 'لطفا مبلغ را وارد کنید.')
+            return
+        try:
+            amount = int(amount_text)
+            if amount <= 0:
+                raise ValueError("مبلغ باید بزرگتر از صفر باشد.")
+        except ValueError:
+            QtWidgets.QMessageBox.warning(
+                self, 
+                'خطا', 
+                'مبلغ وارد شده معتبر نیست. لطفا یک عدد صحیح وارد کنید.'
+            )
+            return
+        # Get other values
+        trans_type = 'income' if self.trans_type_combo.currentText() == 'درآمد' else 'expense'
+        category = self.category_combo.currentText()
+        description = self.description_input.toPlainText().strip()
+        # Set payment_date to today (system-generated)
+        gdate = datetime.today()
+        payment_date = gdate.strftime('%Y-%m-%d')
+        jalali_date = jdatetime.date.fromgregorian(date=gdate).strftime('%Y/%m/%d')
+        # Create description with category
+        full_description = f"{category}"
+        if description:
+            full_description += f" - {description}"
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                cursor = conn.cursor()
+                # Insert transaction
+                cursor.execute("""
+                    INSERT INTO transactions 
+                    (transaction_type, amount, description, payment_date, created_by)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (trans_type, amount, full_description, payment_date, self.current_user_id))
+                # Commit the transaction
+                conn.commit()
+                # Show success message
+                trans_type_fa = 'درآمد' if trans_type == 'income' else 'هزینه'
+                QtWidgets.QMessageBox.information(
+                    self,
+                    'تراکنش با موفقیت ثبت شد',
+                    f'تراکنش {trans_type_fa} به مبلغ {amount:,} تومان در تاریخ {jalali_date} با موفقیت ثبت شد.'
+                )
+                # Clear form and update UI
+                self.clear_transaction_form()
+                self.update_stats()
+                self.load_transactions()
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self,
+                'خطا',
+                f'خطا در ذخیره تراکنش: {str(e)}'
+            )
+            print(f"Error saving transaction: {e}")
+        
+    def setup_history_tab(self, parent=None):
+        """Setup the transaction history tab with filtering and table view."""
+        if parent is None:
+            parent = self.history_tab
+        layout = QtWidgets.QVBoxLayout(parent)
+        
+        # Filter controls
+        filter_layout = QtWidgets.QHBoxLayout()
+        
+        # Remove date range filter; only filter by type and search
+        
+        # Transaction type filter
+        self.type_filter = QtWidgets.QComboBox()
+        self.type_filter.addItem('همه تراکنش‌ها', 'all')
+        self.type_filter.addItem('درآمد', 'income')
+        self.type_filter.addItem('هزینه', 'expense')
+        self.type_filter.addItem('حق عضویت', 'membership')
+        filter_layout.addWidget(self.type_filter)
+        
+        # Search box
+        self.search_input = QtWidgets.QLineEdit()
+        self.search_input.setPlaceholderText('جستجو در توضیحات...')
+        filter_layout.addWidget(self.search_input)
+        
+        # Filter button
+        self.filter_btn = QtWidgets.QPushButton('فیلتر')
+        self.filter_btn.setStyleSheet('font-size: 11pt;')
+        self.filter_btn.clicked.connect(self.load_transactions)
+        filter_layout.addWidget(self.filter_btn)
+        
+        # Export button for history
+        self.export_history_btn = QtWidgets.QPushButton('خروجی PDF')
+        self.export_history_btn.setIcon(self.style().standardIcon(QtWidgets.QStyle.SP_FileIcon))
+        self.export_history_btn.clicked.connect(lambda: self.export_to_pdf(history_only=True))
+        filter_layout.addWidget(self.export_history_btn)
+        
+        # Create table
+        self.transaction_table = QtWidgets.QTableWidget()
+        self.transaction_table.setColumnCount(6)
+        self.transaction_table.setHorizontalHeaderLabels([
+            'تاریخ', 'نوع', 'دسته‌بندی', 'مبلغ (تومان)', 'توضیحات', 'ثبت کننده'
+        ])
+        
+        # Table properties
+        self.transaction_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        self.transaction_table.verticalHeader().setVisible(False)
+        self.transaction_table.setEditTriggers(QtWidgets.QTableWidget.NoEditTriggers)
+        self.transaction_table.setSelectionBehavior(QtWidgets.QTableWidget.SelectRows)
+        
+        # Add widgets to layout
+        layout.addLayout(filter_layout)
+        layout.addWidget(self.transaction_table)
+        
+        # Connect signals
+        self.search_input.returnPressed.connect(self.load_transactions)
+        
+        # Initial load
+        self.load_transactions()
+        
+    def load_transactions(self):
+        """Load transactions based on type and search filters only."""
+        try:
+            # Get filter values
+            trans_type = self.type_filter.currentData()
+            search_text = self.search_input.text().strip()
+
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+
+                # Base query
+                query = """
+                    SELECT 
+                        t.id,
+                        t.payment_date as date,
+                        CASE 
+                            WHEN t.transaction_type = 'income' THEN 'درآمد'
+                            WHEN t.transaction_type = 'expense' THEN 'هزینه'
+                            WHEN t.transaction_type = 'membership' THEN 'حق عضویت'
+                            ELSE t.transaction_type
+                        END as type,
+                        t.amount,
+                        t.description,
+                        COALESCE(u.full_name, 'سیستم') as created_by,
+                        t.transaction_type as raw_type
+                    FROM transactions t
+                    LEFT JOIN users u ON t.created_by = u.id
+                    WHERE 1=1
+                """
+
+                params = []
+
+                # Add type filter if not 'all'
+                if trans_type != 'all':
+                    query += " AND t.transaction_type = ?"
+                    params.append(trans_type)
+
+                # Add search text if provided
+                if search_text:
+                    query += " AND t.description LIKE ?"
+                    params.append(f'%{search_text}%')
+
+                # Add sorting
+                query += " ORDER BY t.payment_date DESC, t.id DESC"
+
+                # Execute query
+                cursor.execute(query, params)
+                transactions = cursor.fetchall()
+
+                # Update table
+                self.transaction_table.setRowCount(0)
+
+                for row_num, row in enumerate(transactions):
+                    self.transaction_table.insertRow(row_num)
+
+                    # Extract category from description (first part before '- ')
+                    description = row['description']
+                    category = description.split(' - ')[0] if ' - ' in description else ''
+                    desc_display = description.split(' - ', 1)[1] if ' - ' in description else description
+
+                    # Format amount with thousand separators
+                    amount = f"{row['amount']:,}"
+
+                    # Add items to table
+                    self.transaction_table.setItem(row_num, 0, QtWidgets.QTableWidgetItem(row['date']))
+                    self.transaction_table.setItem(row_num, 1, QtWidgets.QTableWidgetItem(row['type']))
+                    self.transaction_table.setItem(row_num, 2, QtWidgets.QTableWidgetItem(category))
+                    self.transaction_table.setItem(row_num, 3, QtWidgets.QTableWidgetItem(amount))
+                    self.transaction_table.setItem(row_num, 4, QtWidgets.QTableWidgetItem(desc_display))
+                    self.transaction_table.setItem(row_num, 5, QtWidgets.QTableWidgetItem(row['created_by']))
+
+                    # Set text alignment for amount (right-aligned)
+                    amount_item = self.transaction_table.item(row_num, 3)
+                    amount_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+                    # Set row color based on transaction type
+                    for col in range(self.transaction_table.columnCount()):
+                        item = self.transaction_table.item(row_num, col)
+                        if row['raw_type'] == 'income':
+                            item.setBackground(QtGui.QColor(230, 245, 230))  # Light green
+                        elif row['raw_type'] == 'expense':
+                            item.setBackground(QtGui.QColor(255, 230, 230))  # Light red
+                        else:  # membership
+                            item.setBackground(QtGui.QColor(230, 230, 255))  # Light blue
+
+                # Resize columns to contents
+                self.transaction_table.resizeColumnsToContents()
+
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self,
+                'خطا',
+                f'خطا در بارگذاری تراکنش‌ها: {str(e)}'
+            )
+            print(f"Error loading transactions: {e}")
+        
+    def update_stats(self):
+        """Update the statistics cards."""
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                cursor = conn.cursor()
+                
+                # Get total income
+                cursor.execute("""
+                    SELECT COALESCE(SUM(amount), 0) 
+                    FROM transactions 
+                    WHERE transaction_type IN ('membership', 'income')
+                """)
+                total_income = cursor.fetchone()[0]
+                
+                # Get total expenses
+                cursor.execute("""
+                    SELECT COALESCE(SUM(amount), 0) 
+                    FROM transactions 
+                    WHERE transaction_type = 'expense'
+                """)
+                total_expenses = cursor.fetchone()[0]
+                
+                # Update cards
+                self.income_card.layout().itemAt(1).widget().setText(f"{int(total_income):,} تومان")
+                self.expense_card.layout().itemAt(1).widget().setText(f"{int(total_expenses):,} تومان")
+                self.net_income_card.layout().itemAt(1).widget().setText(f"{int(total_income - total_expenses):,} تومان")
+                
+        except Exception as e:
+            print(f"Error updating stats: {e}")
+    
+    def export_to_pdf(self, history_only=False):
+        """Export financial data to PDF."""
+        try:
+            from reportlab.lib.pagesizes import A4, landscape
+            from reportlab.lib import colors
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.pdfbase import pdfmetrics
+            from reportlab.pdfbase.ttfonts import TTFont
+            from reportlab.lib.enums import TA_RIGHT, TA_CENTER
+            
+            # Setup PDF document
+            timestamp = QtCore.QDateTime.currentDateTime().toString('yyyy-MM-dd_hh-mm-ss')
+            filename = f'گزارش_مالی_{timestamp}.pdf'
+            filepath = os.path.join(os.path.join(os.environ['USERPROFILE']), 'Documents', filename)
+            
+            doc = SimpleDocTemplate(filepath, pagesize=landscape(A4))
+            styles = getSampleStyleSheet()
+            
+            # Add custom styles
+            styles.add(ParagraphStyle(
+                name='Persian',
+                fontName='Arial',
+                fontSize=10,
+                alignment=TA_RIGHT,
+                leading=15
+            ))
+            
+            # Get data from database
+            elements = []
+            with sqlite3.connect(DB_PATH) as conn:
+                cursor = conn.cursor()
+                
+                # Get transactions
+                cursor.execute("""
+                    SELECT 
+                        t.payment_date as date,
+                        CASE 
+                            WHEN t.transaction_type = 'income' THEN 'درآمد'
+                            WHEN t.transaction_type = 'expense' THEN 'هزینه'
+                            ELSE t.transaction_type
+                        END as type,
+                        t.amount,
+                        t.description
+                    FROM transactions t
+                    ORDER BY t.payment_date DESC
+                """)
+                
+                transactions = cursor.fetchall()
+                
+                # Create table data
+                data = [['تاریخ', 'نوع', 'مبلغ (تومان)', 'توضیحات']]
+                total_income = 0
+                total_expense = 0
+                
+                for row in transactions:
+                    amount = float(row[2])
+                    if row[1] == 'هزینه':
+                        total_expense += amount
+                    else:
+                        total_income += amount
+                    
+                    data.append([
+                        row[0],
+                        row[1],
+                        f"{amount:,.0f}",
+                        row[3] or ''
+                    ])
+                
+                # Create and style table
+                table = Table(data, colWidths=[80, 50, 70, 300])
+                table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2980b9')),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Arial'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 10),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                    ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#dddddd')),
+                    ('ALIGN', (2, 1), (2, -1), 'RIGHT'),  # Right align amounts
+                ]))
+                
+                # Add elements to document
+                elements.append(Paragraph('گزارش مالی', styles['Title']))
+                elements.append(Spacer(1, 20))
+                elements.append(table)
+                
+                # Add summary
+                elements.append(Spacer(1, 20))
+                summary = [
+                    f'جمع درآمدها: {total_income:,.0f} تومان',
+                    f'جمع هزینه‌ها: {total_expense:,.0f} تومان',
+                    f'سود خالص: {total_income - total_expense:,.0f} تومان'
+                ]
+                
+                for item in summary:
+                    elements.append(Paragraph(item, styles['Normal']))
+            
+            # Build PDF
+            doc.build(elements)
+            
+            # Show success message
+            QtWidgets.QMessageBox.information(
+                self,
+                'موفقیت',
+                f'گزارش با موفقیت در مسیر زیر ذخیره شد:\n{filepath}'
+            )
+            
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self,
+                'خطا',
+                f'خطا در ایجاد گزارش: {str(e)}'
+            )
+            print(f"Error generating PDF: {e}")

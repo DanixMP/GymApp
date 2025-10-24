@@ -1,0 +1,76 @@
+# Build directories - PyInstaller outputs
+v*/
+v[0-9]*/
+v[0-9].[0-9]*/
+v[0-9].[0-9].[0-9]*/
+build/
+dist/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environments
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+_pycache_/
+
+# PyInstaller spec files
+*.spec
+
+# IDE and Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Activation scripts (virtual environment)
+activate
+activate.bat
+activate.fish
+Activate.ps1
+
+# OS generated files
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Database files (if any)
+*.db
+*.sqlite
+*.sqlite3
+
+# Log files
+*.log
+
+# Configuration files with sensitive data (uncomment if needed)
+# config.ini
+# .env
+
+# Compiled Python files
+*.pyc
+*.pyo
+
+# Egg info
+*.egg-info/
+.eggs/
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
