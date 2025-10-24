@@ -63,12 +63,13 @@ jdatetime>=4.1.0
 ```
 GymApp/
 ├── Dir/                    # Source code directory
-│   ├── App.py             # Main application entry point
+│   ├── 
 │   ├── LoginWidget.py     # Login interface
 │   ├── MembersWidget.py   # Members management interface
 │   ├── ManageWidget.py    # Management interface
 │   ├── SettingWidget.py   # Settings interface
 │   └── database.py        # Database operations
+│    App.py             # Main application entry point
 ├── .gitignore
 ├── README.md
 └── requirements.txt
