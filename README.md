@@ -134,7 +134,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ## Author
 
 **Your Name**
-- GitHub: [@YOUR_USERNAME](https://github.com/YOUR_USERNAME)
+- GitHub: [@YOUR_USERNAME](https://github.com/DanixMP)
 
 ## Acknowledgments
 
@@ -143,7 +143,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Support
 
-For support, please open an issue in the GitHub repository or contact [your.email@example.com]
+For support, please open an issue in the GitHub repository or contact [mahdipur97@gmail.com]
 
 ## Roadmap
 
@@ -156,3 +156,4 @@ For support, please open an issue in the GitHub repository or contact [your.emai
 ---
 
 **Note**: This application is designed for Windows desktop environments.
+**Note**: This application can be Compiled into other OS configuration and desktop Sizes Ranging from 720P to 4K Displays.
