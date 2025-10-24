@@ -69,7 +69,7 @@ GymApp/
 │   ├── ManageWidget.py    # Management interface
 │   ├── SettingWidget.py   # Settings interface
 │   └── database.py        # Database operations
-├──  App.py             # Main application entry point
+├──  App.py                # Main application entry point
 ├── .gitignore
 ├── README.md
 └── requirements.txt
