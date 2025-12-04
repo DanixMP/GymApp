@@ -26,7 +26,7 @@ def main():
 
 if __name__ == '__main__':
     main()
-
+# What is this bro
 # BU GECEEEEE
     """
     soz derken kelime manasinda mi diyorsun anlamadim
